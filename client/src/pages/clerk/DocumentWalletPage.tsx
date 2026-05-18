@@ -2,22 +2,35 @@ import { useEffect, useState, useCallback } from "react";
 import { useAuth } from "@/hooks/useAuth";
 import { applicationApi } from "@/lib/api";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
-import { FileText, CheckCircle, XCircle, Clock, FolderOpen } from "lucide-react";
+import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
+import { Badge } from "@/components/ui/badge";
+import { Avatar, AvatarFallback } from "@/components/ui/avatar";
+import {
+  Dialog, DialogContent, DialogHeader, DialogTitle,
+} from "@/components/ui/dialog";
+import {
+  FileText, CheckCircle, XCircle, Clock, FolderOpen,
+  Search, Download, Eye, ExternalLink, User
+} from "lucide-react";
 import type { Application } from "@/types";
 import { toast } from "sonner";
+import { StatusBadge } from "@/components/shared/StatusBadge";
+import { getInitials, formatDate } from "@/lib/utils";
 
 export default function ClerkDocumentWalletPage() {
   const { user } = useAuth();
   const [applications, setApplications] = useState<Application[]>([]);
   const [isLoading, setIsLoading] = useState(true);
+  const [search, setSearch] = useState("");
+  const [selectedDoc, setSelectedDoc] = useState<any>(null);
 
   const fetchApplications = useCallback(async () => {
     setIsLoading(true);
     try {
       const res = await applicationApi.list();
       const clerkApps = res.applications.filter((app: Application) =>
-        app.assignedClerkId === user?.id &&
-        app.district === user?.district
+        app.status !== "draft"
       );
       setApplications(clerkApps);
     } catch (err: any) {
@@ -33,9 +46,30 @@ export default function ClerkDocumentWalletPage() {
     }
   }, [fetchApplications]);
 
+  // Collect all documents from all applications
+  const allDocuments = applications.flatMap((app) =>
+    (app.documents || []).map((doc: any) => ({
+      ...doc,
+      applicationId: app.applicationId,
+      citizenName: app.fullName,
+      cnic: app.cnic,
+      district: app.district,
+      status: app.status,
+      submittedAt: app.submittedAt,
+    }))
+  );
+
+  const filteredDocs = allDocuments.filter((doc) =>
+    !search ||
+    doc.citizenName?.toLowerCase().includes(search.toLowerCase()) ||
+    doc.applicationId?.toLowerCase().includes(search.toLowerCase()) ||
+    doc.cnic?.includes(search) ||
+    doc.label?.toLowerCase().includes(search.toLowerCase())
+  );
+
   // Stats
   const totalProcessed = applications.filter((a) => ["verified", "approved", "rejected"].includes(a.status)).length;
-  const verifiedAndForwarded = applications.filter((a) => a.status === "verified").length;
+  const verifiedAndForwarded = applications.filter((a) => a.status === "verified" || a.status === "forwarded_to_admin").length;
   const rejected = applications.filter((a) => a.status === "rejected").length;
   const pending = applications.filter((a) => a.status === "pending" || a.status === "in_review").length;
 
@@ -43,7 +77,7 @@ export default function ClerkDocumentWalletPage() {
     <div className="space-y-6">
       <div>
         <h1 className="text-3xl font-bold tracking-tight text-foreground">Document Wallet</h1>
-        <p className="text-muted-foreground mt-1">Overview of processed applications and documents.</p>
+        <p className="text-muted-foreground mt-1">Access and manage all citizen documents from submitted applications.</p>
       </div>
 
       {/* Stats Cards */}
@@ -52,8 +86,17 @@ export default function ClerkDocumentWalletPage() {
           <CardContent className="p-6 flex items-center gap-4">
             <div className="bg-primary/10 p-4 rounded-full"><FileText className="w-6 h-6 text-primary" /></div>
             <div>
-              <p className="text-sm font-medium text-muted-foreground uppercase tracking-wider">Total Processed</p>
-              <h3 className="text-3xl font-bold mt-1">{totalProcessed}</h3>
+              <p className="text-sm font-medium text-muted-foreground uppercase tracking-wider">Total Documents</p>
+              <h3 className="text-3xl font-bold mt-1">{allDocuments.length}</h3>
+            </div>
+          </CardContent>
+        </Card>
+        <Card>
+          <CardContent className="p-6 flex items-center gap-4">
+            <div className="bg-amber-500/10 p-4 rounded-full"><Clock className="w-6 h-6 text-amber-600" /></div>
+            <div>
+              <p className="text-sm font-medium text-muted-foreground uppercase tracking-wider">Pending Review</p>
+              <h3 className="text-3xl font-bold mt-1">{pending}</h3>
             </div>
           </CardContent>
         </Card>
@@ -61,7 +104,7 @@ export default function ClerkDocumentWalletPage() {
           <CardContent className="p-6 flex items-center gap-4">
             <div className="bg-green-500/10 p-4 rounded-full"><CheckCircle className="w-6 h-6 text-green-600" /></div>
             <div>
-              <p className="text-sm font-medium text-muted-foreground uppercase tracking-wider">Verified & Forwarded</p>
+              <p className="text-sm font-medium text-muted-foreground uppercase tracking-wider">Verified</p>
               <h3 className="text-3xl font-bold mt-1">{verifiedAndForwarded}</h3>
             </div>
           </CardContent>
@@ -75,77 +118,125 @@ export default function ClerkDocumentWalletPage() {
             </div>
           </CardContent>
         </Card>
-        <Card>
-          <CardContent className="p-6 flex items-center gap-4">
-            <div className="bg-amber-500/10 p-4 rounded-full"><Clock className="w-6 h-6 text-amber-600" /></div>
-            <div>
-              <p className="text-sm font-medium text-muted-foreground uppercase tracking-wider">Pending</p>
-              <h3 className="text-3xl font-bold mt-1">{pending}</h3>
-            </div>
-          </CardContent>
-        </Card>
       </div>
 
-      {/* Info Card */}
-      <Card className="bg-muted/30">
+      {/* Search */}
+      <div className="relative max-w-md">
+        <Search className="absolute left-3 top-1/2 transform -translate-y-1/2 text-muted-foreground" size={18} />
+        <Input
+          placeholder="Search by name, CNIC, application ID, or document type..."
+          value={search}
+          onChange={(e) => setSearch(e.target.value)}
+          className="pl-10"
+        />
+      </div>
+
+      {/* Document Grid */}
+      <Card>
         <CardHeader>
-          <CardTitle className="flex items-center gap-2">
-            <FolderOpen size={18} /> How Document Processing Works
+          <CardTitle className="flex items-center justify-between">
+            <span className="flex items-center gap-2">
+              <FolderOpen size={18} /> All Documents ({filteredDocs.length})
+            </span>
           </CardTitle>
         </CardHeader>
-        <CardContent className="space-y-2 text-sm text-muted-foreground">
-          <p><strong>1. Pending:</strong> Applications assigned to you awaiting review.</p>
-          <p><strong>2. In Review:</strong> You are currently reviewing the application and documents.</p>
-          <p><strong>3. Verified:</strong> Documents verified and application forwarded to admin for final approval.</p>
-          <p><strong>4. Rejected:</strong> Application rejected due to issues. Reason will be provided.</p>
+        <CardContent>
+          {isLoading ? (
+            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+              {Array.from({ length: 6 }).map((_, i) => (
+                <div key={i} className="h-40 bg-muted animate-pulse rounded-lg" />
+              ))}
+            </div>
+          ) : filteredDocs.length === 0 ? (
+            <div className="text-center py-12">
+              <FolderOpen className="w-12 h-12 mx-auto text-muted-foreground opacity-50" />
+              <p className="text-muted-foreground mt-4">No documents found.</p>
+            </div>
+          ) : (
+            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+              {filteredDocs.map((doc: any, idx) => (
+                <div key={idx} className="border rounded-lg p-4 hover:bg-muted/30 transition-colors">
+                  {/* Citizen Info */}
+                  <div className="flex items-center gap-3 pb-3 border-b mb-3">
+                    <Avatar className="h-10 w-10">
+                      <AvatarFallback className="bg-primary/10 text-primary font-semibold">
+                        {getInitials(doc.citizenName || "U")}
+                      </AvatarFallback>
+                    </Avatar>
+                    <div className="flex-1 min-w-0">
+                      <p className="font-medium text-sm truncate">{doc.citizenName}</p>
+                      <p className="text-xs text-muted-foreground font-mono">{doc.cnic}</p>
+                    </div>
+                  </div>
+
+                  {/* Document Info */}
+                  <div className="space-y-2">
+                    <div className="flex items-center justify-between">
+                      <Badge variant="outline" className="text-xs">{doc.label}</Badge>
+                      <StatusBadge status={doc.status} />
+                    </div>
+                    <div className="text-xs text-muted-foreground">
+                      <p><strong>App ID:</strong> <span className="font-mono">{doc.applicationId}</span></p>
+                      <p><strong>District:</strong> {doc.district}</p>
+                    </div>
+                  </div>
+
+                  {/* Actions */}
+                  <div className="flex gap-2 mt-3 pt-3 border-t">
+                    <Button size="sm" variant="outline" className="flex-1" onClick={() => setSelectedDoc(doc)}>
+                      <Eye size={12} className="mr-1" /> View
+                    </Button>
+                    <a href={doc.url} target="_blank" rel="noreferrer" className="inline-flex items-center justify-center px-3 py-1.5 text-xs border rounded hover:bg-muted/50">
+                      <Download size={12} className="mr-1" /> Download
+                    </a>
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
         </CardContent>
       </Card>
 
-      {/* Processing Flow */}
-      <Card>
-        <CardHeader>
-          <CardTitle>Processing Flow</CardTitle>
-        </CardHeader>
-        <CardContent>
-          <div className="flex items-center justify-between">
-            <div className="flex flex-col items-center">
-              <div className="w-12 h-12 rounded-full bg-blue-500/10 flex items-center justify-center mb-2">
-                <Clock className="w-6 h-6 text-blue-600" />
+      {/* View Document Dialog */}
+      <Dialog open={!!selectedDoc} onOpenChange={(o) => !o && setSelectedDoc(null)}>
+        <DialogContent className="max-w-4xl">
+          <DialogHeader>
+            <DialogTitle className="flex items-center justify-between">
+              <span>{selectedDoc?.label}</span>
+              <Badge variant="outline" className="font-mono">{selectedDoc?.applicationId}</Badge>
+            </DialogTitle>
+          </DialogHeader>
+          <div className="space-y-3">
+            <div className="bg-muted/30 rounded-lg p-3 flex items-center gap-3">
+              <Avatar className="h-10 w-10">
+                <AvatarFallback className="bg-primary/10 text-primary font-semibold">
+                  {getInitials(selectedDoc?.citizenName || "U")}
+                </AvatarFallback>
+              </Avatar>
+              <div>
+                <p className="font-medium">{selectedDoc?.citizenName}</p>
+                <p className="text-xs text-muted-foreground font-mono">{selectedDoc?.cnic}</p>
               </div>
-              <p className="text-sm font-medium">Pending</p>
-              <p className="text-xs text-muted-foreground">{pending}</p>
+              <div className="ml-auto text-right text-xs text-muted-foreground">
+                <p><strong>District:</strong> {selectedDoc?.district}</p>
+                <p><strong>Submitted:</strong> {formatDate(selectedDoc?.submittedAt)}</p>
+              </div>
             </div>
-            <div className="flex-1 h-1 bg-border mx-2" />
-            <div className="flex flex-col items-center">
-              <div className="w-12 h-12 rounded-full bg-amber-500/10 flex items-center justify-center mb-2">
-                <FileText className="w-6 h-6 text-amber-600" />
-              </div>
-              <p className="text-sm font-medium">In Review</p>
-              <p className="text-xs text-muted-foreground">
-                {applications.filter((a) => a.status === "in_review").length}
-              </p>
-            </div>
-            <div className="flex-1 h-1 bg-border mx-2" />
-            <div className="flex flex-col items-center">
-              <div className="w-12 h-12 rounded-full bg-green-500/10 flex items-center justify-center mb-2">
-                <CheckCircle className="w-6 h-6 text-green-600" />
-              </div>
-              <p className="text-sm font-medium">Verified</p>
-              <p className="text-xs text-muted-foreground">{verifiedAndForwarded}</p>
-            </div>
-            <div className="flex-1 h-1 bg-border mx-2" />
-            <div className="flex flex-col items-center">
-              <div className="w-12 h-12 rounded-full bg-purple-500/10 flex items-center justify-center mb-2">
-                <CheckCircle className="w-6 h-6 text-purple-600" />
-              </div>
-              <p className="text-sm font-medium">Admin Approved</p>
-              <p className="text-xs text-muted-foreground">
-                {applications.filter((a) => a.status === "approved").length}
-              </p>
+            <div className="flex justify-center bg-muted/30 rounded-lg p-4 min-h-[400px]">
+              {selectedDoc?.format?.startsWith("image/") ? (
+                <img src={selectedDoc?.url} alt={selectedDoc?.label} className="max-w-full max-h-[500px] object-contain" />
+              ) : (
+                <iframe src={selectedDoc?.url} className="w-full h-[500px]" title={selectedDoc?.label} />
+              )}
             </div>
           </div>
-        </CardContent>
-      </Card>
+          <div className="flex justify-end gap-2">
+            <a href={selectedDoc?.url} target="_blank" rel="noreferrer" className="inline-flex items-center justify-center px-4 py-2 text-sm border rounded hover:bg-muted/50">
+              <ExternalLink size={14} className="mr-2" /> Open in New Tab
+            </a>
+          </div>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }

@@ -9,6 +9,7 @@ const formatApp = (app) => ({
   id: app._id?.toString() || null,
   applicationId: app.applicationId || "",
   userId: app.userId?._id ? app.userId._id.toString() : app.userId?.toString() || null,
+  citizenName: app.citizenName || "",
   fullName: app.fullName || "",
   fatherName: app.fatherName || "",
   cnic: app.cnic || "",
@@ -19,11 +20,14 @@ const formatApp = (app) => ({
   permanentAddress: app.permanentAddress || "",
   status: app.status || "pending",
   remarks: app.remarks || "",
+  clerkRemarks: app.clerkRemarks || [],
+  statusHistory: app.statusHistory || [],
   documents: app.documents || [],
   submittedAt: app.createdAt || null,
   updatedAt: app.updatedAt || null,
   certificateNumber: app.certificateNumber || "",
   issuedAt: app.issuedAt || null,
+  reviewedBy: app.reviewedBy || null,
 });
 
 // POST /api/applications  — create (with optional document uploads)
@@ -46,7 +50,6 @@ export const createApplication = async (req, res, next) => {
     if (req.files) {
       for (const [fieldName, files] of Object.entries(req.files)) {
         const file = files[0];
-        // Cloudinary storage provides path and filename; memory storage provides buffer
         const url = file.path || `data:${file.mimetype};base64,${file.buffer?.toString("base64") || ""}`;
         const publicId = file.filename || `${Date.now()}-${fieldName}`;
         documents.push({
@@ -61,10 +64,18 @@ export const createApplication = async (req, res, next) => {
 
     const app = await Application.create({
       userId: req.user._id,
+      citizenName: req.user.name,
       fullName, fatherName, cnic, dateOfBirth,
       gender, district, currentAddress, permanentAddress,
       documents,
       status: "pending",
+      statusHistory: [{
+        status: "pending",
+        changedBy: req.user._id,
+        changedByName: req.user.name,
+        remarks: "Application submitted",
+        createdAt: new Date(),
+      }],
     });
 
     // Notify citizen
@@ -98,7 +109,6 @@ export const saveDraft = async (req, res, next) => {
       gender, district, currentAddress, permanentAddress,
     } = req.body;
 
-    // Build documents array from Cloudinary uploads
     const documents = [];
     const fieldLabels = {
       cnic_front: "CNIC Copy (Front)",
@@ -124,7 +134,6 @@ export const saveDraft = async (req, res, next) => {
 
     let app;
     if (applicationId) {
-      // Update existing draft
       app = await Application.findOne({ applicationId, userId: req.user._id });
       if (!app) {
         return res.status(404).json({ success: false, message: "Draft application not found." });
@@ -137,31 +146,39 @@ export const saveDraft = async (req, res, next) => {
       if (district !== undefined) app.district = district;
       if (currentAddress !== undefined) app.currentAddress = currentAddress;
       if (permanentAddress !== undefined) app.permanentAddress = permanentAddress;
+
       if (documents.length > 0) {
-        documents.forEach((doc) => {
-          app.documents = app.documents.filter((d) => d.label !== doc.label);
-          app.documents.push(doc);
-        });
+        for (const doc of documents) {
+          const existingIdx = app.documents.findIndex((d) => d.label === doc.label);
+          if (existingIdx >= 0) {
+            app.documents[existingIdx] = doc;
+          } else {
+            app.documents.push(doc);
+          }
+        }
       }
+
       await app.save();
-    } else {
-      // Create new draft
-      app = await Application.create({
-        userId: req.user._id,
-        fullName: fullName || "",
-        fatherName: fatherName || "",
-        cnic: cnic || "",
-        dateOfBirth: dateOfBirth || "",
-        gender: gender || "",
-        district: district || "",
-        currentAddress: currentAddress || "",
-        permanentAddress: permanentAddress || "",
-        documents,
-        status: "draft",
-      });
+      return res.status(200).json({ success: true, application: formatApp(app) });
     }
 
-    res.status(200).json({ success: true, application: formatApp(app) });
+    // Create new draft
+    app = await Application.create({
+      userId: req.user._id,
+      citizenName: req.user.name,
+      fullName: fullName || "",
+      fatherName: fatherName || "",
+      cnic: cnic || "",
+      dateOfBirth: dateOfBirth || "",
+      gender: gender || "male",
+      district: district || "",
+      currentAddress: currentAddress || "",
+      permanentAddress: permanentAddress || "",
+      documents,
+      status: "draft",
+    });
+
+    res.status(201).json({ success: true, application: formatApp(app) });
   } catch (error) {
     next(error);
   }
@@ -172,12 +189,9 @@ export const getApplications = async (req, res, next) => {
   try {
     let query = {};
 
-    // Citizens see only their own
     if (req.user.role === "citizen") {
       query.userId = req.user._id;
     }
-    // Clerks see all (clerk filter by district optionally)
-    // Admin sees all
 
     const { status, district, search, page = 1, limit = 20 } = req.query;
     if (status && status !== "all") query.status = status;
@@ -187,6 +201,7 @@ export const getApplications = async (req, res, next) => {
         { fullName: { $regex: search, $options: "i" } },
         { cnic: { $regex: search, $options: "i" } },
         { applicationId: { $regex: search, $options: "i" } },
+        { citizenName: { $regex: search, $options: "i" } },
       ];
     }
 
@@ -232,7 +247,7 @@ export const getApplication = async (req, res, next) => {
 export const updateApplicationStatus = async (req, res, next) => {
   try {
     const { status, remarks } = req.body;
-    const allowed = ["pending", "verified", "in_review", "approved", "rejected"];
+    const allowed = ["pending", "in_review", "verified", "approved", "rejected", "forwarded_to_admin"];
     if (!allowed.includes(status)) {
       return res.status(400).json({ success: false, message: "Invalid status." });
     }
@@ -240,9 +255,27 @@ export const updateApplicationStatus = async (req, res, next) => {
     const app = await Application.findById(req.params.id);
     if (!app) return res.status(404).json({ success: false, message: "Application not found." });
 
+    const previousStatus = app.status;
     app.status = status;
-    if (remarks) app.remarks = remarks;
+    if (remarks) {
+      app.remarks = remarks;
+      app.clerkRemarks.push({
+        text: remarks,
+        author: req.user._id,
+        authorName: req.user.name,
+        createdAt: new Date(),
+      });
+    }
     app.reviewedBy = req.user._id;
+
+    // Track status history
+    app.statusHistory.push({
+      status,
+      changedBy: req.user._id,
+      changedByName: req.user.name,
+      remarks: remarks || `Status changed from ${previousStatus} to ${status}`,
+      createdAt: new Date(),
+    });
 
     if (status === "approved") {
       const year = new Date().getFullYear();
@@ -252,10 +285,11 @@ export const updateApplicationStatus = async (req, res, next) => {
 
     await app.save();
 
-    // Notify citizen
+    // Status messages
     const messages = {
-      verified: "Your documents have been verified successfully.",
-      in_review: "Your application is now under review by the officer.",
+      in_review: "Your application is now under verification by the clerk.",
+      verified: "Your documents have been verified. Application forwarded to admin for final approval.",
+      forwarded_to_admin: "Your application has been forwarded to admin for final review.",
       approved: `Congratulations! Your domicile certificate (${app.certificateNumber}) has been issued.`,
       rejected: `Your application was rejected. Reason: ${remarks || "Please contact the office."}`,
     };
@@ -327,7 +361,6 @@ export const uploadDocuments = async (req, res, next) => {
         const file = files[0];
         const url = file.path || `data:${file.mimetype};base64,${file.buffer?.toString("base64") || ""}`;
         const publicId = file.filename || `${Date.now()}-${fieldName}`;
-        // Remove existing doc with same label
         app.documents = app.documents.filter(
           (d) => d.label !== (fieldLabels[fieldName] || fieldName)
         );
@@ -372,67 +405,20 @@ export const downloadDocument = async (req, res, next) => {
 export const verifyCertificate = async (req, res, next) => {
   try {
     const { certificateNumber } = req.params;
-    const app = await Application.findOne({ certificateNumber, status: "approved" });
-
-    if (!app || !app.issuedAt) {
-      return res.status(200).json({
-        success: true,
-        valid: false,
-        message: "Certificate not found or invalid.",
-      });
+    const app = await Application.findOne({ certificateNumber }).populate("userId", "name");
+    if (!app) {
+      return res.status(404).json({ success: false, message: "Certificate not found." });
     }
 
-    // Mask full name
-    const maskName = (name) =>
-      name.split(" ").map((p) => p[0] + "*".repeat(Math.max(0, p.length - 1))).join(" ");
-
     res.status(200).json({
       success: true,
-      valid: true,
-      certificateNumber: app.certificateNumber,
-      fullNameMasked: maskName(app.fullName),
-      district: app.district,
-      issueDate: new Date(app.issuedAt).toLocaleDateString("en-US", {
-        year: "numeric", month: "long", day: "numeric",
-      }),
-      status: "Authenticated",
-    });
-  } catch (error) {
-    next(error);
-  }
-};
-
-// GET /api/applications/dashboard  — citizen dashboard summary
-export const getDashboardSummary = async (req, res, next) => {
-  try {
-    const userId = req.user._id;
-    const apps = await Application.find({ userId }).sort({ createdAt: -1 });
-    const latest = apps[0];
-    const notifCount = await Notification.countDocuments({ userId, read: false });
-
-    const journey = {
-      submitted: latest?.createdAt || null,
-      verified: latest?.status === "verified" || latest?.status === "approved" ? latest.updatedAt : null,
-      inReview: latest?.status === "in_review",
-      issued: latest?.issuedAt || null,
-      applicationRef: latest?.applicationId || null,
-    };
-
-    res.status(200).json({
-      success: true,
-      summary: {
-        currentStatus: latest?.status || "No Application",
-        applicationId: latest?.applicationId || null,
-        certificatesIssued: apps.filter((a) => a.status === "approved").length,
-        notificationCount: notifCount,
-        applicationJourney: journey,
-        recentActivity: apps.slice(0, 5).map((a) => ({
-          id: a._id,
-          description: `Application ${a.applicationId}`,
-          detail: `Status: ${a.status}`,
-          timeAgo: a.updatedAt,
-          icon: "file",
-        })),
+      certificate: {
+        certificateNumber: app.certificateNumber,
+        holderName: app.fullName,
+        fatherName: app.fatherName,
+        district: app.district,
+        issuedAt: app.issuedAt,
+        status: app.status,
       },
     });
   } catch (error) {
@@ -440,245 +426,110 @@ export const getDashboardSummary = async (req, res, next) => {
   }
 };
 
-// GET /api/applications/:id/certificate — citizen downloads approved certificate (PDF)
+// GET /api/applications/:id/certificate — download PDF
 export const downloadCertificate = async (req, res, next) => {
   try {
-    const app = await Application.findById(req.params.id).populate("userId", "name email district");
+    const app = await Application.findById(req.params.id);
+    if (!app) return res.status(404).json({ success: false, message: "Application not found." });
 
-    if (!app) {
-      return res.status(404).json({ success: false, message: "Application not found." });
+    if (app.status !== "approved" || !app.certificateNumber) {
+      return res.status(400).json({ success: false, message: "Certificate not available." });
     }
 
-    // Only owner or clerk/admin can download
-    const isOwner = app.userId._id.toString() === req.user._id.toString();
-    const isStaff = ["clerk", "admin"].includes(req.user.role);
+    const doc = new PDFDocument({ margin: 60 });
 
-    if (!isOwner && !isStaff) {
-      return res.status(403).json({ success: false, message: "Access denied." });
-    }
-
-    if (app.status !== "approved") {
-      return res.status(400).json({
-        success: false,
-        message: "Certificate not yet issued. Application must be approved first.",
-      });
-    }
-
-    if (!app.certificateNumber) {
-      return res.status(400).json({
-        success: false,
-        message: "Certificate number not found.",
-      });
-    }
-
-    // Find the photograph from documents
-    let photoBuffer = null;
-    const photoDoc = app.documents?.find((d) => d.label === "Passport Size Photograph");
-
-    if (photoDoc && photoDoc.url) {
-      try {
-        const photoResponse = await fetch(photoDoc.url);
-        if (photoResponse.ok) {
-          photoBuffer = await photoResponse.buffer();
-        }
-      } catch (e) {
-        console.warn("Could not fetch photo for certificate:", e.message);
-      }
-    }
-
-    // Create PDF document
-    const doc = new PDFDocument({
-      size: "A4",
-      layout: "landscape",
-      margin: 30,
-    });
-
-    // Set response headers for PDF download
     res.setHeader("Content-Type", "application/pdf");
-    res.setHeader(
-      "Content-Disposition",
-      `attachment; filename="${app.certificateNumber}.pdf"`
-    );
-    res.setHeader("Cache-Control", "no-store, no-cache, must-revalidate");
-    res.setHeader("Pragma", "no-cache");
-
+    res.setHeader("Content-Disposition", `attachment; filename="${app.certificateNumber}.pdf"`);
     doc.pipe(res);
 
-    // Colors
-    const borderColor = "#0d4f3c";
-    const headerColor = "#0d4f3c";
-    const textColor = "#1a1a1a";
+    doc.rect(0, 0, doc.page.width, doc.page.height).fill("#f8fafc");
+    doc.rect(40, 40, doc.page.width - 80, doc.page.height - 80).stroke("#1e40af", 2);
 
-    // Border frame
-    doc
-      .rect(15, 15, doc.page.width - 30, doc.page.height - 30)
-      .lineWidth(3)
-      .stroke(borderColor);
-
-    // Inner border
-    doc
-      .rect(22, 22, doc.page.width - 44, doc.page.height - 44)
-      .lineWidth(1)
-      .stroke(borderColor);
-
-    // Header background
-    doc.rect(30, 30, doc.page.width - 60, 55).fill(headerColor);
-
-    // Government header text
-    doc.fillColor("#ffffff").fontSize(10);
-    doc.text("GOVERNMENT OF AZAD JAMMU & KASHMIR", 30, 35, {
-      align: "center",
-      width: doc.page.width - 60,
-    });
-
-    doc.fontSize(16).font("Helvetica-Bold");
-    doc.text("DOMICILE MANAGEMENT SYSTEM", 30, 48, {
-      align: "center",
-      width: doc.page.width - 60,
-    });
-
-    doc.fontSize(8).font("Helvetica");
-    doc.text("Official Certificate of Domicile", 30, 65, {
-      align: "center",
-      width: doc.page.width - 60,
-    });
-
-    // Certificate title
-    doc.moveDown(0.5);
-    doc.fillColor(headerColor).fontSize(14).font("Helvetica-Bold");
-    doc.text("CERTIFICATE OF DOMICILE", { align: "center" });
-
+    doc.fontSize(22).fillColor("#1e40af").text("Government of Azad Jammu & Kashmir", { align: "center" });
     doc.moveDown(0.3);
-    doc.fontSize(9).font("Helvetica");
-    doc.fillColor(textColor);
+    doc.fontSize(16).fillColor("#374151").text("Domicile Management System", { align: "center" });
+    doc.moveDown(0.8);
+    doc.fontSize(14).fillColor("#6b7280").text("OFFICIAL DOMICILE CERTIFICATE", { align: "center" });
+    doc.moveDown(1.5);
 
-    const issueDate = app.issuedAt
-      ? new Date(app.issuedAt).toLocaleDateString("en-US", {
-          year: "numeric",
-          month: "long",
-          day: "numeric",
-        })
-      : "N/A";
-
+    doc.fontSize(12).fillColor("#374151");
     doc.text(`Certificate Number: ${app.certificateNumber}`, { align: "center" });
-    doc.text(`Issue Date: ${issueDate}`, { align: "center" });
-    doc.text(`Application Reference: ${app.applicationId}`, { align: "center" });
-
-    // Horizontal line
-    doc.moveDown(0.3);
-    doc
-      .moveTo(60, doc.y)
-      .lineTo(doc.page.width - 60, doc.y)
-      .lineWidth(1)
-      .stroke(headerColor);
-
     doc.moveDown(0.5);
+    doc.text(`Holder Name: ${app.fullName}`, { align: "center" });
+    doc.moveDown(0.3);
+    doc.text(`Father's Name: ${app.fatherName}`, { align: "center" });
+    doc.moveDown(0.3);
+    doc.text(`CNIC: ${app.cnic}`, { align: "center" });
+    doc.moveDown(0.3);
+    doc.text(`District: ${app.district}`, { align: "center" });
+    doc.moveDown(0.3);
+    doc.text(`Date of Birth: ${app.dateOfBirth}`, { align: "center" });
+    doc.moveDown(0.3);
+    doc.text(`Permanent Address: ${app.permanentAddress}`, { align: "center" });
+    doc.moveDown(1.5);
+    doc.text(`Issue Date: ${app.issuedAt ? new Date(app.issuedAt).toLocaleDateString() : "N/A"}`, { align: "center" });
+    doc.moveDown(2);
 
-    // ===== PHOTO SECTION (Top Right Corner) =====
-    const photoX = doc.page.width - 160;
-    const photoY = doc.y - 5;
-    const photoSize = 80;
+    doc.fontSize(10).fillColor("#9ca3af").text("This certificate is issued by the Domicile Management System, Government of AJK.", { align: "center" });
+    doc.text("Verify at: https://dms.ajk.gov.pk/verify", { align: "center" });
 
-    // Photo border box
-    doc
-      .rect(photoX, photoY, photoSize, photoSize)
-      .lineWidth(2)
-      .stroke("#333333");
+    doc.addPage();
+    doc.rect(0, 0, doc.page.width, doc.page.height).fill("#f8fafc");
 
-    if (photoBuffer) {
-      try {
-        doc.image(photoBuffer, photoX, photoY, {
-          fit: [photoSize, photoSize],
-          align: "center",
-          valign: "center",
-        });
-      } catch (imgErr) {
-        doc
-          .fontSize(8)
-          .fillColor("#666666")
-          .text("Photo", photoX, photoY + 30, { width: photoSize, align: "center" });
-      }
-    } else {
-      doc
-        .fontSize(8)
-        .fillColor("#666666")
-        .text("Photo", photoX, photoY + 30, { width: photoSize, align: "center" });
-      doc
-        .fontSize(6)
-        .text("Not Available", photoX, photoY + 42, { width: photoSize, align: "center" });
+    doc.fontSize(16).fillColor("#1e40af").text("Document Checklist", { align: "center" });
+    doc.moveDown(1);
+    doc.fontSize(11).fillColor("#374151");
+
+    for (const docItem of app.documents) {
+      doc.text(`✓ ${docItem.label}`, { align: "left" });
     }
 
-    // Photo label
-    doc
-      .fontSize(7)
-      .fillColor("#333333")
-      .text("PASSPORT SIZE PHOTO", photoX, photoY + photoSize + 2, { width: photoSize, align: "center" });
+    doc.moveDown(2);
+    doc.fontSize(10).fillColor("#6b7280").text("Application ID: " + app.applicationId, { align: "center", width: doc.page.width - 120 });
+    doc.text("Submitted: " + new Date(app.createdAt).toLocaleDateString(), { align: "center" });
+    doc.addPage();
 
-    // ===== LEFT SIDE: Applicant Details =====
-    doc.fontSize(10).font("Helvetica-Bold").fillColor(headerColor);
-    doc.text("APPLICANT DETAILS", 60);
+    for (const docItem of app.documents) {
+      if (docItem.format && docItem.format.startsWith("image/")) {
+        try {
+          doc.image(docItem.url, { fit: [doc.page.width - 120, 400], align: "center" });
+          doc.moveDown(0.5);
+          doc.fontSize(10).fillColor("#6b7280").text(docItem.label, { align: "center" });
+          doc.addPage();
+        } catch {
+          // Skip invalid images
+        }
+      }
+    }
 
-    doc.moveDown(0.2);
-    doc.fontSize(9).font("Helvetica").fillColor(textColor);
-
-    doc.text(`Full Name: ${app.fullName}`, 60);
-    doc.text(`Father's Name: ${app.fatherName}`, 60);
-    doc.text(`CNIC Number: ${app.cnic}`, 60);
-    doc.text(`Date of Birth: ${app.dateOfBirth}`, 60);
-    doc.text(`Gender: ${app.gender}`, 60);
-    doc.text(`District: ${app.district}`, 60);
-
-    doc.moveDown(0.5);
-
-    // Addresses
-    doc.text(`Current Address: ${app.currentAddress}`, 60);
-    doc.text(`Permanent Address: ${app.permanentAddress}`, 60);
-
-    doc.moveDown(0.5);
-
-    // Certification
-    doc.fontSize(10).font("Helvetica-Bold").fillColor(headerColor);
-    doc.text("CERTIFICATION", 60);
-
-    doc.moveDown(0.2);
-    doc.fontSize(9).font("Helvetica").fillColor(textColor);
-
-    const certifyText = `This is to certify that the above-named person is a bona fide resident of ${app.district}, Azad Jammu & Kashmir, Pakistan, and is entitled to all rights and privileges of a domicile of the aforementioned region.`;
-
-    doc.text(certifyText, 60, doc.y, {
-      align: "justify",
-      width: doc.page.width - 240,
-    });
-
-    // Verification URL
-    doc.moveDown(1);
-    doc.fontSize(8).fillColor("#666666");
-    doc.text("Scan to verify: ", 60);
-    doc.fontSize(8).fillColor(headerColor);
-    const verifyUrl = `${process.env.CLIENT_URL || "http://localhost:5173"}/verify/${app.certificateNumber}`;
-    doc.text(verifyUrl, 60, doc.y + 12, { link: verifyUrl, underline: true });
-
-    // Footer
-    const footerY = doc.page.height - 55;
-    doc
-      .moveTo(60, footerY)
-      .lineTo(doc.page.width - 60, footerY)
-      .stroke(headerColor);
-
-    doc.fontSize(7).fillColor("#666666");
-    doc.text(
-      "This is an official digital certificate issued by the Government of Azad Jammu & Kashmir.",
-      60,
-      footerY + 8,
-      { align: "center", width: doc.page.width - 120 }
-    );
-    doc.text(
-      "Unauthorized reproduction or tampering with this certificate is punishable by law.",
-      { align: "center", width: doc.page.width - 120 }
-    );
-
-    // Finalize PDF
     doc.end();
+  } catch (error) {
+    next(error);
+  }
+};
+
+// GET /api/applications/dashboard — summary for dashboard
+export const getDashboardSummary = async (req, res, next) => {
+  try {
+    const query = req.user.role === "citizen" ? { userId: req.user._id } : {};
+
+    const total = await Application.countDocuments({ ...query, status: { $ne: "draft" } });
+    const pending = await Application.countDocuments({ ...query, status: "pending" });
+    const inReview = await Application.countDocuments({ ...query, status: "in_review" });
+    const verified = await Application.countDocuments({ ...query, status: "verified" });
+    const approved = await Application.countDocuments({ ...query, status: "approved" });
+    const rejected = await Application.countDocuments({ ...query, status: "rejected" });
+    const forwarded = await Application.countDocuments({ ...query, status: "forwarded_to_admin" });
+
+    const recent = await Application.find({ ...query, status: { $ne: "draft" } })
+      .sort({ createdAt: -1 })
+      .limit(5)
+      .select("applicationId fullName district status createdAt");
+
+    res.status(200).json({
+      success: true,
+      summary: { total, pending, inReview, verified, approved, rejected, forwarded, recent },
+    });
   } catch (error) {
     next(error);
   }

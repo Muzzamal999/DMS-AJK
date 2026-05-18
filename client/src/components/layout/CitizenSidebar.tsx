@@ -42,7 +42,7 @@ export function CitizenSidebar({ children }: { children: ReactNode }) {
 
   const handleLogout = () => {
     logout();
-    setLocation("/login");
+    setLocation("/");
   };
 
   const handleProfile = () => {

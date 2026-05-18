@@ -26,7 +26,7 @@ function NavLink({ href, icon, children, collapsed, onClick }: NavLinkProps) {
       href={href}
       className={`flex items-center gap-3 px-3 py-2 rounded-md transition-colors text-sm font-medium ${
         isActive
-          ? "bg-primary text-primary-foreground"
+          ? "bg-yellow-500 text-black"
           : "text-sidebar-foreground/70 hover:bg-sidebar-accent/50 hover:text-sidebar-foreground"
       }`}
       title={collapsed ? String(children) : undefined}
@@ -50,7 +50,7 @@ export function ClerkLayout({ children }: ClerkLayoutProps) {
 
   const handleLogout = () => {
     logout();
-    setLocation("/login");
+    setLocation("/");
   };
 
   const handleProfile = () => {

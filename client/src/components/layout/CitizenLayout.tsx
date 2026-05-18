@@ -49,7 +49,7 @@ export function CitizenLayout({ children }: CitizenLayoutProps) {
 
   const handleLogout = () => {
     logout();
-    setLocation("/login");
+    setLocation("/");
   };
 
   const handleProfile = () => {

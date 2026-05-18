@@ -6,39 +6,66 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
-import { Avatar, AvatarFallback } from "@/components/ui/avatar";
-import { Settings as SettingsIcon, Save, Camera, Shield } from "lucide-react";
+import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
+import { Settings as SettingsIcon, Save, Camera, Shield, Lock, AlertCircle } from "lucide-react";
 import { getInitials } from "@/lib/utils";
 import { AJK_DISTRICTS } from "@/constants";
 
+const DAYS_BETWEEN_UPDATES = 30;
+
+function isUpdateAllowed(timestamp: string | null | undefined): boolean {
+  if (!timestamp) return true;
+  const lastUpdate = new Date(timestamp);
+  const daysPassed = (Date.now() - lastUpdate.getTime()) / (1000 * 60 * 60 * 24);
+  return daysPassed >= DAYS_BETWEEN_UPDATES;
+}
+
+function daysUntilNextUpdate(timestamp: string | null | undefined): number {
+  if (!timestamp) return 0;
+  const lastUpdate = new Date(timestamp);
+  const nextUpdate = new Date(lastUpdate.getTime() + DAYS_BETWEEN_UPDATES * 24 * 60 * 60 * 1000);
+  const daysLeft = Math.ceil((nextUpdate.getTime() - Date.now()) / (1000 * 60 * 60 * 24));
+  return Math.max(0, daysLeft);
+}
+
 export default function ClerkSettingsPage() {
-  const { user } = useAuth();
+  const { user, login } = useAuth();
   const [formData, setFormData] = useState({
-    name: user?.name || "",
-    district: user?.district || "",
+    name: "",
+    district: "",
     phone: "",
-    email: user?.email || "",
   });
+  const [avatarPreview, setAvatarPreview] = useState<string | null>(null);
   const [isSaving, setIsSaving] = useState(false);
+  const [passwordData, setPasswordData] = useState({
+    currentPassword: "",
+    newPassword: "",
+    confirmPassword: "",
+  });
+  const [isChangingPassword, setIsChangingPassword] = useState(false);
+  const [showPasswordSuccess, setShowPasswordSuccess] = useState(false);
 
   useEffect(() => {
     if (user) {
       setFormData({
         name: user.name || "",
         district: user.district || "",
-        phone: "",
-        email: user.email || "",
+        phone: user.phone || "",
       });
+      setAvatarPreview(user.avatarUrl || null);
     }
   }, [user]);
 
   const handleSave = async () => {
     setIsSaving(true);
     try {
-      await authApi.updateMe({
+      const res = await authApi.updateMe({
         name: formData.name,
         district: formData.district,
+        phone: formData.phone,
+        avatarUrl: avatarPreview || undefined,
       });
+      login(res.user, localStorage.getItem("dms_auth_token") || "");
       toast.success("Profile updated successfully!");
     } catch (err: any) {
       toast.error(err.message || "Failed to update profile.");
@@ -47,9 +74,52 @@ export default function ClerkSettingsPage() {
     }
   };
 
-  const handleAvatarUpload = async (file: File) => {
-    toast.info("Avatar upload not implemented yet.");
+  const handleAvatarChange = (file: File) => {
+    if (file.size > 2 * 1024 * 1024) {
+      toast.error("Image must be smaller than 2MB.");
+      return;
+    }
+    const reader = new FileReader();
+    reader.onload = (e) => {
+      setAvatarPreview(e.target?.result as string);
+    };
+    reader.readAsDataURL(file);
   };
+
+  const handlePasswordChange = async () => {
+    if (passwordData.newPassword !== passwordData.confirmPassword) {
+      toast.error("New passwords don't match.");
+      return;
+    }
+    if (passwordData.newPassword.length < 6) {
+      toast.error("Password must be at least 6 characters.");
+      return;
+    }
+
+    setIsChangingPassword(true);
+    try {
+      await authApi.changePassword({
+        currentPassword: passwordData.currentPassword,
+        newPassword: passwordData.newPassword,
+      });
+      toast.success("Password changed successfully!");
+      setPasswordData({ currentPassword: "", newPassword: "", confirmPassword: "" });
+      setShowPasswordSuccess(true);
+      setTimeout(() => setShowPasswordSuccess(false), 5000);
+      const userRes = await authApi.getMe();
+      login(userRes.user, localStorage.getItem("dms_auth_token") || "");
+    } catch (err: any) {
+      toast.error(err.message || "Failed to change password.");
+    } finally {
+      setIsChangingPassword(false);
+    }
+  };
+
+  const canUpdateProfile = isUpdateAllowed(user?.profileUpdatedAt as string | null | undefined);
+  const profileDaysLeft = daysUntilNextUpdate(user?.profileUpdatedAt as string | null | undefined);
+
+  const canChangePassword = isUpdateAllowed(user?.passwordChangedAt as string | null | undefined);
+  const passwordDaysLeft = daysUntilNextUpdate(user?.passwordChangedAt as string | null | undefined);
 
   return (
     <div className="space-y-6">
@@ -75,6 +145,9 @@ export default function ClerkSettingsPage() {
             <div className="flex items-center gap-4">
               <div className="relative">
                 <Avatar className="w-20 h-20 border-2 border-border">
+                  {avatarPreview ? (
+                    <AvatarImage src={avatarPreview} alt={formData.name} />
+                  ) : null}
                   <AvatarFallback className="text-xl bg-primary/10 text-primary">
                     {getInitials(formData.name || "C")}
                   </AvatarFallback>
@@ -87,14 +160,14 @@ export default function ClerkSettingsPage() {
                     className="hidden"
                     onChange={(e) => {
                       const file = e.target.files?.[0];
-                      if (file) handleAvatarUpload(file);
+                      if (file) handleAvatarChange(file);
                     }}
                   />
                 </label>
               </div>
               <div>
                 <p className="font-medium">{formData.name || "Clerk"}</p>
-                <p className="text-sm text-muted-foreground">{formData.email}</p>
+                <p className="text-sm text-muted-foreground">{user?.email}</p>
                 <p className="text-xs text-primary mt-1">Clerk Account</p>
               </div>
             </div>
@@ -116,7 +189,7 @@ export default function ClerkSettingsPage() {
                 <Input
                   id="email"
                   type="email"
-                  value={formData.email}
+                  value={user?.email || ""}
                   disabled
                   className="bg-muted"
                 />
@@ -151,53 +224,94 @@ export default function ClerkSettingsPage() {
               </div>
             </div>
 
-            <Button onClick={handleSave} disabled={isSaving} className="w-full">
-              <Save size={14} className="mr-2" /> {isSaving ? "Saving..." : "Save Changes"}
-            </Button>
+            {!canUpdateProfile ? (
+              <div className="p-3 rounded-lg bg-amber-50 border border-amber-200 flex items-start gap-2">
+                <AlertCircle size={16} className="text-amber-600 mt-0.5 shrink-0" />
+                <div>
+                  <p className="text-sm text-amber-800 font-medium">Profile update restricted</p>
+                  <p className="text-xs text-amber-600 mt-1">
+                    You can update your profile again in <strong>{profileDaysLeft} day{profileDaysLeft !== 1 ? "s" : ""}</strong>.
+                    Changes are allowed once every 30 days.
+                  </p>
+                </div>
+              </div>
+            ) : (
+              <Button onClick={handleSave} disabled={isSaving} className="w-full">
+                <Save size={14} className="mr-2" /> {isSaving ? "Saving..." : "Save Changes"}
+              </Button>
+            )}
           </CardContent>
         </Card>
 
-        {/* Work Information */}
+        {/* Change Password */}
         <Card>
           <CardHeader>
             <CardTitle className="flex items-center gap-2">
-              <Shield size={18} /> Work Information
+              <Lock size={18} /> Change Password
             </CardTitle>
           </CardHeader>
           <CardContent className="space-y-4">
-            <div className="p-4 bg-muted/50 rounded-lg">
-              <p className="text-sm font-medium mb-2">Your Role</p>
-              <p className="text-2xl font-bold text-primary">Government Clerk</p>
-              <p className="text-sm text-muted-foreground mt-1">
-                You can verify applications and forward them to admin for final approval.
-              </p>
-            </div>
+            {showPasswordSuccess && (
+              <div className="p-3 rounded-lg bg-green-50 border border-green-200 text-green-700 text-sm">
+                Password changed successfully!
+              </div>
+            )}
 
-            <div className="space-y-2">
-              <p className="text-sm font-medium">Permissions</p>
-              <ul className="space-y-1 text-sm text-muted-foreground">
-                <li className="flex items-center gap-2">
-                  <span className="w-2 h-2 bg-green-500 rounded-full" />
-                  View assigned applications
-                </li>
-                <li className="flex items-center gap-2">
-                  <span className="w-2 h-2 bg-green-500 rounded-full" />
-                  Update application status
-                </li>
-                <li className="flex items-center gap-2">
-                  <span className="w-2 h-2 bg-green-500 rounded-full" />
-                  Add remarks to applications
-                </li>
-                <li className="flex items-center gap-2">
-                  <span className="w-2 h-2 bg-amber-500 rounded-full" />
-                  Cannot approve applications directly
-                </li>
-                <li className="flex items-center gap-2">
-                  <span className="w-2 h-2 bg-amber-500 rounded-full" />
-                  Cannot access other districts' data
-                </li>
-              </ul>
-            </div>
+            {!canChangePassword ? (
+              <div className="p-3 rounded-lg bg-amber-50 border border-amber-200 flex items-start gap-2">
+                <AlertCircle size={16} className="text-amber-600 mt-0.5 shrink-0" />
+                <div>
+                  <p className="text-sm text-amber-800 font-medium">Password change restricted</p>
+                  <p className="text-xs text-amber-600 mt-1">
+                    You can change your password again in <strong>{passwordDaysLeft} day{passwordDaysLeft !== 1 ? "s" : ""}</strong>.
+                    Changes are allowed once every 30 days.
+                  </p>
+                </div>
+              </div>
+            ) : (
+              <>
+                <div className="space-y-2">
+                  <Label htmlFor="currentPassword">Current Password</Label>
+                  <Input
+                    id="currentPassword"
+                    type="password"
+                    value={passwordData.currentPassword}
+                    onChange={(e) => setPasswordData((f) => ({ ...f, currentPassword: e.target.value }))}
+                    placeholder="Enter current password"
+                  />
+                </div>
+
+                <div className="space-y-2">
+                  <Label htmlFor="newPassword">New Password</Label>
+                  <Input
+                    id="newPassword"
+                    type="password"
+                    value={passwordData.newPassword}
+                    onChange={(e) => setPasswordData((f) => ({ ...f, newPassword: e.target.value }))}
+                    placeholder="Enter new password"
+                  />
+                </div>
+
+                <div className="space-y-2">
+                  <Label htmlFor="confirmPassword">Confirm New Password</Label>
+                  <Input
+                    id="confirmPassword"
+                    type="password"
+                    value={passwordData.confirmPassword}
+                    onChange={(e) => setPasswordData((f) => ({ ...f, confirmPassword: e.target.value }))}
+                    placeholder="Confirm new password"
+                  />
+                </div>
+
+                <Button
+                  onClick={handlePasswordChange}
+                  disabled={isChangingPassword || !passwordData.currentPassword || !passwordData.newPassword}
+                  className="w-full"
+                >
+                  {isChangingPassword ? "Updating..." : "Update Password"}
+                </Button>
+              </>
+            )}
           </CardContent>
         </Card>
       </div>

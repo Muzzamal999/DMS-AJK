@@ -39,6 +39,7 @@ export default function CitizenDashboardPage() {
   // Calculate stats
   const totalApps = applications.length;
   const pendingApps = applications.filter((a) => a.status === "pending" || a.status === "in_review").length;
+  const processingApps = applications.filter((a) => a.status === "verified" || a.status === "forwarded_to_admin").length;
   const approvedApps = applications.filter((a) => a.status === "approved").length;
   const rejectedApps = applications.filter((a) => a.status === "rejected").length;
   const latestApp = applications[0];
@@ -46,6 +47,7 @@ export default function CitizenDashboardPage() {
   const statsCards = [
     { label: "Total Applications", value: totalApps, icon: <FileText className="w-5 h-5" />, color: "text-blue-600" },
     { label: "Pending", value: pendingApps, icon: <Clock3 className="w-5 h-5" />, color: "text-amber-600" },
+    { label: "Under Processing", value: processingApps, icon: <FileText className="w-5 h-5" />, color: "text-indigo-600" },
     { label: "Approved", value: approvedApps, icon: <CheckCircle className="w-5 h-5" />, color: "text-green-600" },
     { label: "Rejected", value: rejectedApps, icon: <XCircle className="w-5 h-5" />, color: "text-red-600" },
   ];
@@ -71,9 +73,14 @@ export default function CitizenDashboardPage() {
           <h1 className="text-2xl font-bold text-foreground">Welcome, {user?.name}!</h1>
           <p className="text-sm text-muted-foreground mt-1">Here's your application summary</p>
         </div>
-        <Button variant="outline" size="sm" onClick={fetchApplications}>
-          <RefreshCw size={14} className="mr-2" /> Refresh
-        </Button>
+        <div className="flex items-center gap-3">
+          <Button variant="outline" size="sm" onClick={fetchApplications}>
+            <RefreshCw size={14} className="mr-2" /> Refresh
+          </Button>
+          <Button size="sm" onClick={() => setLocation("/apply")}>
+            <Plus size={14} className="mr-2" /> Apply for Certificate
+          </Button>
+        </div>
       </div>
 
       {/* Stats Cards */}

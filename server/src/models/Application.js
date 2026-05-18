@@ -8,6 +8,21 @@ const documentSchema = new mongoose.Schema({
   uploadedAt: { type: Date, default: Date.now },
 });
 
+const remarkSchema = new mongoose.Schema({
+  text: { type: String, required: true },
+  author: { type: mongoose.Schema.Types.ObjectId, ref: "User", required: true },
+  authorName: { type: String, required: true },
+  createdAt: { type: Date, default: Date.now },
+});
+
+const statusLogSchema = new mongoose.Schema({
+  status: { type: String, required: true },
+  changedBy: { type: mongoose.Schema.Types.ObjectId, ref: "User" },
+  changedByName: { type: String },
+  remarks: { type: String },
+  createdAt: { type: Date, default: Date.now },
+});
+
 const applicationSchema = new mongoose.Schema(
   {
     applicationId: {
@@ -19,6 +34,7 @@ const applicationSchema = new mongoose.Schema(
       ref: "User",
       required: true,
     },
+    citizenName: { type: String, required: true },
     fullName: { type: String, required: true, trim: true },
     fatherName: { type: String, required: true, trim: true },
     cnic: { type: String, required: true, trim: true },
@@ -33,10 +49,12 @@ const applicationSchema = new mongoose.Schema(
     permanentAddress: { type: String, required: true },
     status: {
       type: String,
-      enum: ["draft", "pending", "verified", "in_review", "approved", "rejected"],
+      enum: ["draft", "pending", "in_review", "verified", "approved", "rejected", "forwarded_to_admin"],
       default: "draft",
     },
     remarks: { type: String, default: null },
+    clerkRemarks: [remarkSchema],
+    statusHistory: [statusLogSchema],
     documents: [documentSchema],
     certificateNumber: { type: String, default: null },
     issuedAt: { type: Date, default: null },

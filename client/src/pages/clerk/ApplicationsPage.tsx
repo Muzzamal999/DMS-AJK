@@ -12,15 +12,20 @@ import { Button } from "@/components/ui/button";
 import {
   Table, TableBody, TableCell, TableHead, TableHeader, TableRow,
 } from "@/components/ui/table";
-import { Avatar, AvatarFallback } from "@/components/ui/avatar";
+import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 import {
   Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter,
 } from "@/components/ui/dialog";
 import { Textarea } from "@/components/ui/textarea";
-import { Search, Filter, FileCheck2, Clock, CheckCircle, XCircle, Eye, Forward, FileText } from "lucide-react";
+import { Label } from "@/components/ui/label";
+import {
+  Search, Filter, FileCheck2, Clock, CheckCircle, XCircle,
+  Eye, FileText, Download, ExternalLink, User
+} from "lucide-react";
 import { getInitials, formatDate } from "@/lib/utils";
 import type { Application } from "@/types";
 import { toast } from "sonner";
+import { Badge } from "@/components/ui/badge";
 
 export default function ClerkApplicationsPage() {
   const { user } = useAuth();
@@ -33,16 +38,15 @@ export default function ClerkApplicationsPage() {
   const [newStatus, setNewStatus] = useState<string>("");
   const [remarks, setRemarks] = useState("");
   const [isUpdating, setIsUpdating] = useState(false);
+  const [viewDoc, setViewDoc] = useState<any>(null);
 
   const fetchApplications = useCallback(async () => {
     setIsLoading(true);
     try {
       const res = await applicationApi.list();
-      // Filter applications assigned to this clerk and submitted
+      // Clerks see all non-draft applications
       const clerkApps = res.applications.filter((app: Application) =>
-        app.assignedClerkId === user?.id &&
-        app.status !== "draft" &&
-        app.district === user?.district
+        app.status !== "draft"
       );
       setApplications(clerkApps);
     } catch (err: any) {
@@ -63,9 +67,10 @@ export default function ClerkApplicationsPage() {
     const matchStatus = statusFilter === "all" || app.status === statusFilter;
     const matchSearch =
       !search ||
-      app.fullName.toLowerCase().includes(search.toLowerCase()) ||
-      app.cnic.includes(search) ||
-      app.applicationId.toLowerCase().includes(search.toLowerCase());
+      app.fullName?.toLowerCase().includes(search.toLowerCase()) ||
+      app.cnic?.includes(search) ||
+      app.applicationId?.toLowerCase().includes(search.toLowerCase()) ||
+      (app as any).citizenName?.toLowerCase().includes(search.toLowerCase());
     return matchDistrict && matchStatus && matchSearch;
   });
 
@@ -79,7 +84,7 @@ export default function ClerkApplicationsPage() {
     if (!selected || !newStatus) return;
     setIsUpdating(true);
     try {
-      await applicationApi.updateStatus(selected.id, newStatus as Application["status"], remarks);
+      await applicationApi.updateStatus(selected.id, { status: newStatus, remarks });
       toast.success("Application status updated successfully.");
       setSelected(null);
       fetchApplications();
@@ -90,21 +95,38 @@ export default function ClerkApplicationsPage() {
     }
   };
 
+  const handleForwardToAdmin = async () => {
+    if (!selected) return;
+    setNewStatus("forwarded_to_admin");
+    setIsUpdating(true);
+    try {
+      await applicationApi.updateStatus(selected.id, { status: "forwarded_to_admin", remarks: remarks || "Forwarded to Admin for final approval" });
+      toast.success("Application forwarded to Admin.");
+      setSelected(null);
+      fetchApplications();
+    } catch (err: any) {
+      toast.error(err.message || "Failed to forward application.");
+    } finally {
+      setIsUpdating(false);
+    }
+  };
+
   // Stats
   const pending = applications.filter((a) => a.status === "pending").length;
   const inReview = applications.filter((a) => a.status === "in_review").length;
   const verified = applications.filter((a) => a.status === "verified").length;
+  const forwarded = applications.filter((a) => a.status === "forwarded_to_admin").length;
   const rejected = applications.filter((a) => a.status === "rejected").length;
 
   return (
     <div className="space-y-8">
       <div>
-        <h1 className="text-3xl font-bold tracking-tight text-foreground">My Applications</h1>
-        <p className="text-muted-foreground mt-1">Manage and verify domicile applications assigned to you.</p>
+        <h1 className="text-3xl font-bold tracking-tight text-foreground">Application Processing</h1>
+        <p className="text-muted-foreground mt-1">Review and manage citizen domicile applications.</p>
       </div>
 
       {/* Stats */}
-      <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+      <div className="grid grid-cols-2 md:grid-cols-5 gap-4">
         <Card>
           <CardContent className="p-4 flex items-center gap-3">
             <div className="bg-blue-500/10 p-3 rounded-full"><Clock className="w-5 h-5 text-blue-600" /></div>
@@ -118,17 +140,26 @@ export default function ClerkApplicationsPage() {
           <CardContent className="p-4 flex items-center gap-3">
             <div className="bg-amber-500/10 p-3 rounded-full"><FileText className="w-5 h-5 text-amber-600" /></div>
             <div>
-              <p className="text-xs font-medium text-muted-foreground uppercase">In Review</p>
+              <p className="text-xs font-medium text-muted-foreground uppercase">Under Review</p>
               <p className="text-2xl font-bold">{inReview}</p>
             </div>
           </CardContent>
         </Card>
         <Card>
           <CardContent className="p-4 flex items-center gap-3">
-            <div className="bg-green-500/10 p-3 rounded-full"><CheckCircle className="w-5 h-5 text-green-600" /></div>
+            <div className="bg-indigo-500/10 p-3 rounded-full"><CheckCircle className="w-5 h-5 text-indigo-600" /></div>
             <div>
               <p className="text-xs font-medium text-muted-foreground uppercase">Verified</p>
               <p className="text-2xl font-bold">{verified}</p>
+            </div>
+          </CardContent>
+        </Card>
+        <Card>
+          <CardContent className="p-4 flex items-center gap-3">
+            <div className="bg-purple-500/10 p-3 rounded-full"><ExternalLink className="w-5 h-5 text-purple-600" /></div>
+            <div>
+              <p className="text-xs font-medium text-muted-foreground uppercase">Forwarded</p>
+              <p className="text-2xl font-bold">{forwarded}</p>
             </div>
           </CardContent>
         </Card>
@@ -146,14 +177,14 @@ export default function ClerkApplicationsPage() {
       {/* Applications table */}
       <Card className="border-border">
         <div className="p-6 border-b border-border flex flex-col sm:flex-row gap-4 justify-between items-center bg-muted/10">
-          <h3 className="text-lg font-bold">Application Queue</h3>
+          <h3 className="text-lg font-bold">Application Queue ({filtered.length})</h3>
           <div className="flex flex-col sm:flex-row gap-3 w-full sm:w-auto">
             <div className="relative w-full sm:w-64">
               <Search className="absolute left-2.5 top-2.5 h-4 w-4 text-muted-foreground" />
               <Input
                 value={search}
                 onChange={(e) => setSearch(e.target.value)}
-                placeholder="Search CNIC, name or ID..."
+                placeholder="Search name, CNIC, or ID..."
                 className="pl-9"
               />
             </div>
@@ -168,14 +199,16 @@ export default function ClerkApplicationsPage() {
               </SelectContent>
             </Select>
             <Select value={statusFilter} onValueChange={setStatusFilter}>
-              <SelectTrigger className="w-full sm:w-40">
+              <SelectTrigger className="w-full sm:w-44">
                 <SelectValue placeholder="Status" />
               </SelectTrigger>
               <SelectContent>
                 <SelectItem value="all">All Statuses</SelectItem>
                 <SelectItem value="pending">Pending</SelectItem>
-                <SelectItem value="in_review">In Review</SelectItem>
+                <SelectItem value="in_review">Under Review</SelectItem>
                 <SelectItem value="verified">Verified</SelectItem>
+                <SelectItem value="forwarded_to_admin">Forwarded</SelectItem>
+                <SelectItem value="approved">Approved</SelectItem>
                 <SelectItem value="rejected">Rejected</SelectItem>
               </SelectContent>
             </Select>
@@ -216,7 +249,7 @@ export default function ClerkApplicationsPage() {
                     <div className="flex items-center gap-3">
                       <Avatar className="h-8 w-8">
                         <AvatarFallback className="bg-primary/10 text-primary text-xs font-semibold">
-                          {getInitials(app.fullName)}
+                          {getInitials(app.fullName || "U")}
                         </AvatarFallback>
                       </Avatar>
                       <div>
@@ -247,74 +280,188 @@ export default function ClerkApplicationsPage() {
 
       {/* Review Dialog */}
       <Dialog open={!!selected} onOpenChange={(o) => !o && setSelected(null)}>
-        <DialogContent className="max-w-lg">
+        <DialogContent className="max-w-2xl max-h-[90vh] overflow-y-auto">
           <DialogHeader>
-            <DialogTitle>Review Application — {selected?.applicationId}</DialogTitle>
+            <DialogTitle className="flex items-center gap-2">
+              Review Application
+              <Badge variant="outline" className="font-mono">{selected?.applicationId}</Badge>
+            </DialogTitle>
           </DialogHeader>
           {selected && (
-            <div className="space-y-4">
-              <div className="grid grid-cols-2 gap-3 text-sm">
-                <div><p className="text-muted-foreground">Applicant</p><p className="font-medium">{selected.fullName}</p></div>
-                <div><p className="text-muted-foreground">CNIC</p><p className="font-mono">{selected.cnic}</p></div>
-                <div><p className="text-muted-foreground">Father Name</p><p className="font-medium">{selected.fatherName}</p></div>
-                <div><p className="text-muted-foreground">District</p><p className="font-medium">{selected.district}</p></div>
-                <div><p className="text-muted-foreground">Date of Birth</p><p className="font-medium">{selected.dateOfBirth}</p></div>
-                <div><p className="text-muted-foreground">Current Status</p><StatusBadge status={selected.status} /></div>
+            <div className="space-y-6">
+              {/* Applicant Info Card */}
+              <div className="bg-muted/30 rounded-lg p-4 space-y-3">
+                <div className="flex items-center gap-3 pb-3 border-b">
+                  <Avatar className="h-12 w-12">
+                    <AvatarFallback className="bg-primary/10 text-primary text-lg font-semibold">
+                      {getInitials(selected.fullName || "U")}
+                    </AvatarFallback>
+                  </Avatar>
+                  <div>
+                    <p className="font-semibold text-lg">{selected.fullName}</p>
+                    <p className="text-sm text-muted-foreground flex items-center gap-1">
+                      <User size={14} /> Citizen • {selected.district}
+                    </p>
+                  </div>
+                </div>
+                <div className="grid grid-cols-2 gap-4 text-sm">
+                  <div>
+                    <p className="text-muted-foreground">Father Name</p>
+                    <p className="font-medium">{selected.fatherName}</p>
+                  </div>
+                  <div>
+                    <p className="text-muted-foreground">CNIC</p>
+                    <p className="font-mono font-medium">{selected.cnic}</p>
+                  </div>
+                  <div>
+                    <p className="text-muted-foreground">Date of Birth</p>
+                    <p className="font-medium">{selected.dateOfBirth}</p>
+                  </div>
+                  <div>
+                    <p className="text-muted-foreground">Gender</p>
+                    <p className="font-medium capitalize">{selected.gender}</p>
+                  </div>
+                  <div className="col-span-2">
+                    <p className="text-muted-foreground">Current Address</p>
+                    <p className="font-medium">{selected.currentAddress}</p>
+                  </div>
+                  <div className="col-span-2">
+                    <p className="text-muted-foreground">Permanent Address</p>
+                    <p className="font-medium">{selected.permanentAddress}</p>
+                  </div>
+                </div>
               </div>
 
+              {/* Documents Section */}
               {selected.documents && selected.documents.length > 0 && (
                 <div>
-                  <p className="text-sm font-medium mb-2">Uploaded Documents</p>
-                  <div className="grid grid-cols-2 gap-2">
+                  <Label className="text-base font-semibold">Uploaded Documents ({selected.documents.length})</Label>
+                  <div className="grid grid-cols-2 gap-3 mt-3">
                     {selected.documents.map((doc: any, i: number) => (
-                      <a key={i} href={doc.url} target="_blank" rel="noreferrer"
-                        className="flex items-center gap-2 text-xs border rounded p-2 hover:bg-muted/50 text-primary">
-                        <FileCheck2 className="w-3 h-3" /> {doc.label}
-                      </a>
+                      <div key={i} className="border rounded-lg p-3 hover:bg-muted/30 transition-colors">
+                        <div className="flex items-center justify-between mb-2">
+                          <div className="flex items-center gap-2">
+                            <FileCheck2 className="w-4 h-4 text-green-600" />
+                            <span className="text-sm font-medium">{doc.label}</span>
+                          </div>
+                          <Badge variant="outline" className="text-xs">{doc.format?.split("/")[1]?.toUpperCase() || "FILE"}</Badge>
+                        </div>
+                        <div className="flex gap-2">
+                          <Button size="sm" variant="outline" onClick={() => setViewDoc(doc)}>
+                            <Eye size={12} className="mr-1" /> View
+                          </Button>
+                          <a href={doc.url} target="_blank" rel="noreferrer" className="inline-flex items-center justify-center px-3 py-1.5 text-xs border rounded hover:bg-muted/50">
+                            <Download size={12} className="mr-1" /> Download
+                          </a>
+                        </div>
+                      </div>
                     ))}
                   </div>
                 </div>
               )}
 
-              <div>
-                <label className="text-sm font-medium block mb-1">Update Status</label>
-                <Select value={newStatus} onValueChange={setNewStatus}>
-                  <SelectTrigger>
-                    <SelectValue />
-                  </SelectTrigger>
-                  <SelectContent>
-                    <SelectItem value="pending">Pending</SelectItem>
-                    <SelectItem value="in_review">In Review</SelectItem>
-                    <SelectItem value="verified">Verified (Forward to Admin)</SelectItem>
-                    <SelectItem value="rejected">Rejected</SelectItem>
-                  </SelectContent>
-                </Select>
-                <p className="text-xs text-muted-foreground mt-1">
-                  {newStatus === "verified" && "After verifying, the application will be forwarded to admin for final approval."}
-                  {newStatus === "rejected" && "Please provide a reason for rejection."}
-                </p>
+              {/* Status Update Section */}
+              <div className="border-t pt-4">
+                <Label className="text-base font-semibold mb-3 block">Update Application Status</Label>
+                <div className="grid grid-cols-2 gap-2 mb-3">
+                  <Button
+                    size="sm"
+                    variant={newStatus === "in_review" ? "default" : "outline"}
+                    onClick={() => setNewStatus("in_review")}
+                    className={newStatus === "in_review" ? "bg-amber-500 hover:bg-amber-600" : ""}
+                  >
+                    <Clock size={14} className="mr-1" /> Under Review
+                  </Button>
+                  <Button
+                    size="sm"
+                    variant={newStatus === "verified" ? "default" : "outline"}
+                    onClick={() => setNewStatus("verified")}
+                    className={newStatus === "verified" ? "bg-indigo-500 hover:bg-indigo-600" : ""}
+                  >
+                    <CheckCircle size={14} className="mr-1" /> Verified
+                  </Button>
+                  <Button
+                    size="sm"
+                    variant={newStatus === "forwarded_to_admin" ? "default" : "outline"}
+                    onClick={() => setNewStatus("forwarded_to_admin")}
+                    className={newStatus === "forwarded_to_admin" ? "bg-purple-500 hover:bg-purple-600" : ""}
+                  >
+                    <ExternalLink size={14} className="mr-1" /> Forward to Admin
+                  </Button>
+                  <Button
+                    size="sm"
+                    variant={newStatus === "rejected" ? "default" : "outline"}
+                    onClick={() => setNewStatus("rejected")}
+                    className={newStatus === "rejected" ? "bg-red-500 hover:bg-red-600" : ""}
+                  >
+                    <XCircle size={14} className="mr-1" /> Reject
+                  </Button>
+                </div>
+                {newStatus === "forwarded_to_admin" && (
+                  <p className="text-xs text-purple-600 mb-2 bg-purple-50 p-2 rounded">
+                    Verified applications will be forwarded to Admin for final approval.
+                  </p>
+                )}
+                {newStatus === "rejected" && (
+                  <p className="text-xs text-amber-600 mb-2 bg-amber-50 p-2 rounded">
+                    Please provide a reason for rejection in the remarks section below.
+                  </p>
+                )}
               </div>
 
+              {/* Remarks */}
               <div>
-                <label className="text-sm font-medium block mb-1">Remarks</label>
+                <Label>Clerk Remarks / Comments</Label>
                 <Textarea
                   value={remarks}
                   onChange={(e) => setRemarks(e.target.value)}
                   placeholder="Add remarks for the applicant or admin..."
                   rows={3}
+                  className="mt-2"
                 />
               </div>
             </div>
           )}
-          <DialogFooter className="gap-2">
+          <DialogFooter className="gap-2 mt-4">
             <Button variant="outline" onClick={() => setSelected(null)}>Cancel</Button>
             <Button
-              className="bg-primary hover:bg-primary/90"
+              variant="destructive"
               onClick={handleUpdateStatus}
               disabled={isUpdating || !newStatus}
+              className={newStatus === "rejected" ? "bg-red-500" : ""}
             >
-              {isUpdating ? "Updating..." : newStatus === "verified" ? "Verify & Forward" : "Update Status"}
+              {isUpdating ? "Updating..." : newStatus === "rejected" ? "Reject Application" : "Update Status"}
             </Button>
+            {(newStatus === "verified" || newStatus === "forwarded_to_admin") && (
+              <Button
+                className="bg-purple-500 hover:bg-purple-600"
+                onClick={handleUpdateStatus}
+                disabled={isUpdating}
+              >
+                <ExternalLink size={14} className="mr-1" /> Forward to Admin
+              </Button>
+            )}
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* View Document Dialog */}
+      <Dialog open={!!viewDoc} onOpenChange={(o) => !o && setViewDoc(null)}>
+        <DialogContent className="max-w-3xl">
+          <DialogHeader>
+            <DialogTitle>{viewDoc?.label}</DialogTitle>
+          </DialogHeader>
+          <div className="flex justify-center bg-muted/30 rounded-lg p-4 min-h-[400px]">
+            {viewDoc?.format?.startsWith("image/") ? (
+              <img src={viewDoc.url} alt={viewDoc.label} className="max-w-full max-h-[500px] object-contain" />
+            ) : (
+              <iframe src={viewDoc?.url} className="w-full h-[500px]" title={viewDoc?.label} />
+            )}
+          </div>
+          <DialogFooter>
+            <a href={viewDoc?.url} target="_blank" rel="noreferrer" className="inline-flex items-center justify-center px-4 py-2 text-sm border rounded hover:bg-muted/50">
+              <ExternalLink size={14} className="mr-2" /> Open in New Tab
+            </a>
           </DialogFooter>
         </DialogContent>
       </Dialog>
